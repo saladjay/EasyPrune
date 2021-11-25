@@ -4,9 +4,9 @@
 # Press Double Shift to search everywhere for classes, files, tool windows, actions, and settings.
 import logging.handlers
 
-from demo.rawapi import *
-from demo.replaceapi import *
-from demo.common import *
+
+from EasyPrune.replaceapi import *
+from EasyPrune.module4test import *
 import torch.nn as nn
 
 

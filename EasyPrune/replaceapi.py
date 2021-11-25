@@ -4,7 +4,7 @@ import torch.nn.functional as F
 import torch
 from enum import Enum
 
-from demo.forwardlog import forwardlog
+from EasyPrune.forwardlog import forwardlog
 import traceback
 
 log = forwardlog()
@@ -16,7 +16,7 @@ REGISTERED_LIST = [
     'Conv2d', 'ConvTranspose2d',
     'ConstantPad1d', 'ConstantPad2d', 'ConstantPad3d', 'ZeroPad2d',
     'Linear',
-    'ReLU', 'LeakyReLU', 'Sigmoid', "Softmax",
+    'ReLU', 'LeakyReLU', 'Sigmoid', "Softmax", "SiLU",
     'MaxPool2d', 'AvgPool2d',
     'BatchNorm2d', 'BatchNorm1d', 'BatchNorm3d', 'InstanceNorm1d', 'InstanceNorm2d', 'InstanceNorm3d',
     #################TensorRT not support class###############
@@ -94,6 +94,15 @@ def _silu(raw, input, inplace=False):
     INLINE = False
     return x
 
+# torch.nn.PReLU----->F.prelu
+def _prelu(raw, input, weights):
+    global INLINE
+    x = raw(input, weights)
+    name = log.add_blob('prelu_', input, x)
+    if DEBUG:
+        print(name)
+    INLINE = False
+    return x
 
 # nn.MaxPool2d----->F.max_pool2d
 def _max_pool2d(raw, *args, **kwargs):
@@ -467,6 +476,7 @@ def run():
     F.relu = replaceTorchAPI(F.relu, _relu)
     F.leaky_relu = replaceTorchAPI(F.leaky_relu, _leaky_relu)
     F.silu = replaceTorchAPI(F.silu, _silu)
+    F.prelu = replaceTorchAPI(F.prelu, _prelu)
     F.max_pool2d = replaceTorchAPI(F.max_pool2d, _max_pool2d)
     F.avg_pool2d = replaceTorchAPI(F.avg_pool2d, _avg_pool2d)
     F.linear = replaceTorchAPI(F.linear, _linear)
@@ -523,14 +533,20 @@ def run():
 
 def runback():
     os.environ['forward'] = 'false'
+    # convolution
     F.conv2d = replaceTorchAPIback(F.conv2d)
+    # liner
+    F.linear = replaceTorchAPIback(F.linear)
+    # activation
     F.relu = replaceTorchAPIback(F.relu)
     F.leaky_relu = replaceTorchAPIback(F.leaky_relu)
     F.silu = replaceTorchAPIback(F.silu)
+    F.prelu = replaceTorchAPIback(F.prelu)
+    # pooling
     F.max_pool2d = replaceTorchAPIback(F.max_pool2d)
     F.avg_pool2d = replaceTorchAPIback(F.avg_pool2d)
-    F.linear = replaceTorchAPIback(F.linear)
     F.adaptive_avg_pool2d = replaceTorchAPIback(F.adaptive_avg_pool2d)
+
     F.softmax = replaceTorchAPIback(F.softmax)
     F.conv_transpose2d = replaceTorchAPIback(F.conv_transpose2d)
     F.pad = replaceTorchAPIback(F.pad)
@@ -554,7 +570,16 @@ def runback():
         t.__add__ = raw_operation_dict['add']
         t.__sub__ = raw_operation_dict['sub']
         t.__mul__ = raw_operation_dict['mul']
-        # t.__getitem__ = raw_operation_dict['get_item']
+        t.__getitem__ = raw_operation_dict['get_item']
 
         t.permute = raw_operation_dict['permute']
         t.expand_as = raw_operation_dict['expand_as']
+
+def GetForwardCall(model,input_tensor):
+    log.clear()
+    log.add_input_blob_id(int(id(input_tensor)))
+    run()
+    with torch.no_grad():
+        o = model(input_tensor)
+    runback()
+    return log

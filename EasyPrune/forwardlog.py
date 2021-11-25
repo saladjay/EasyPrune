@@ -29,10 +29,10 @@ class forwardlog(object):
 
             blob_dict = {
                 'input': input_ids,
-                'input_tensor': inputs,
+                'input_tensor_shape': [input_tensor.shape for input_tensor in inputs],
                 'type': typename,
                 'output': output_ids,
-                'output_tensor': outputs,
+                'output_tensor_shape': [output_tensor.shape for output_tensor in outputs],
                 'index': len(self.blobs),
             }
 
@@ -163,17 +163,11 @@ class forwardlog(object):
                 name = self.getlayername(input_id)
                 input_names.append(name if name is not None else input_id)
             inputs.append(input_names)
-
             outputs.append([f'{key}{oi}' for oi in range(len(blob['output']))])
-
             layer_indexes.append(i)
-
             layer_types.append(blob['type'])
-
-            input_shapes.append([list(t.shape) for t in blob['input_tensor']])
-
-            output_shapes.append(([list(t.shape) for t in blob['output_tensor']]))
-
+            input_shapes.append([list(t) for t in blob['input_tensor_shape']])
+            output_shapes.append(([list(t) for t in blob['output_tensor_shape']]))
             w = self.weight_dict.get(f'{key}.weight')
             weight_shapes.append(list(w.shape) if w is not None else None)
         csv = pd.DataFrame()
