@@ -4,40 +4,40 @@ import collections
 import inspect
 
 class PruneAssistant():
-    def __init__(self,model):
+    def __init__(self, model):
         super(PruneAssistant, self).__init__()
-        self.model_layer_dict = collections.OrderedDict()
-        self.model_layer_prune_rate_dict = collections.OrderedDict()
-        self.model_layer_parameters = {}
-        self.layer_parameter_dict = {}
+        self.model_blob_dict = collections.OrderedDict()
+        self.model_blob_prune_rate_dict = collections.OrderedDict()
+        self.model_blob_parameters = {}
+        self.model_blob_parameter_dict = {}
         self.model = model
-        for name, module in model.named_modules():
+        for module_name, module in model.named_modules():
             if isinstance(module, nn.Sequential) or len(list(module.children)) > 0:
                 continue
-            self.model_layer_dict[name] = module
-            self.model_layer_prune_rate_dict[name] = 1.0
-            self.model_layer_parameters[name] = {}
-            if type(module) not in self.layer_parameter_dict.keys():
-                self.layer_parameter_dict[type(module)] = inspect.signature(type(module)).parameters
+            self.model_blob_dict[module_name] = module
+            self.model_blob_prune_rate_dict[module_name] = 1.0
+            self.model_blob_parameters[module_name] = {}
+            if type(module) not in self.model_blob_parameter_dict.keys():
+                self.model_blob_parameter_dict[type(module)] = inspect.signature(type(module)).parameters
             for k, v in module.__dict__.items():
-                if k in layer_parameter_dict[type(module)].keys():
-                    model_layer_parameters[name][k] = v
+                if k in self.model_blob_parameter_dict[type(module)].keys():
+                    self.model_blob_parameters[module_name][k] = v
 
     def save(self, path):
-        ckpt = {'model_layer_dict':self.model_layer_dict,
-                'model_layer_prune_rate_dict':self.model_layer_prune_rate_dict,
-                'model_layer_parameters':self.model_layer_parameters,
-                'layer_parameter_dict':self.layer_parameter_dict,
-                'model':model}
-        torch.save(ckpt,path)
+        ckpt = {'model_layer_dict': self.model_blob_dict,
+                'model_layer_prune_rate_dict': self.model_blob_prune_rate_dict,
+                'model_layer_parameters': self.model_blob_parameters,
+                'layer_parameter_dict': self.model_blob_parameter_dict,
+                'model': model}
+        torch.save(ckpt, path)
         del ckpt
 
     def load(self, path):
         ckpt = torch.load(path)
-        self.model_layer_dict = ckpt['model_layer_dict']
-        self.model_layer_prune_rate_dict = ckpt['model_layer_prune_rate_dict']
-        self.model_layer_parameters = ckpt['model_layer_parameters']
-        self.layer_parameter_dict = ckpt['layer_parameter_dict']
+        self.model_blob_dict = ckpt['model_layer_dict']
+        self.model_blob_prune_rate_dict = ckpt['model_layer_prune_rate_dict']
+        self.model_blob_parameters = ckpt['model_layer_parameters']
+        self.model_blob_parameter_dict = ckpt['layer_parameter_dict']
         self.model = ckpt['model']
         del ckpt
 

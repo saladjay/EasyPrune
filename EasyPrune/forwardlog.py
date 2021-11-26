@@ -5,6 +5,7 @@ import string
 
 class forwardlog(object):
     def __init__(self):
+        super(forwardlog, self).__init__()
         self.layers = {}
         self.weight_dict = collections.OrderedDict()
         self.blobs = collections.OrderedDict()

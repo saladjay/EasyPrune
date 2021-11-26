@@ -94,6 +94,7 @@ def _silu(raw, input, inplace=False):
     INLINE = False
     return x
 
+
 # torch.nn.PReLU----->F.prelu
 def _prelu(raw, input, weights):
     global INLINE
@@ -103,6 +104,7 @@ def _prelu(raw, input, weights):
         print(name)
     INLINE = False
     return x
+
 
 # nn.MaxPool2d----->F.max_pool2d
 def _max_pool2d(raw, *args, **kwargs):
@@ -575,7 +577,8 @@ def runback():
         t.permute = raw_operation_dict['permute']
         t.expand_as = raw_operation_dict['expand_as']
 
-def GetForwardCall(model,input_tensor):
+
+def get_forward_log(model, input_tensor):
     log.clear()
     log.add_input_blob_id(int(id(input_tensor)))
     run()
