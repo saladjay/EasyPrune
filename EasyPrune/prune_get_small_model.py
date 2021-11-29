@@ -5,6 +5,8 @@ import collections
 import numpy as np
 from copy import deepcopy
 
+import torchvision.models.detection.ssdlite
+
 from EasyPrune.prune_utils import *
 from EasyPrune.prune_common import *
 from EasyPrune.forwardlog import *
@@ -270,7 +272,7 @@ def get_small_model(ori_model, json_path, input_tensor):
                 param_d['num_features'] = int(d['prune_num_features'])
                 set_special_module(small_model, module_name, nn.BatchNorm2d(**param_d))
 
-    return small_model, final_dict
+    return small_model, final_dict, model_assist
 
 
 def get_keep_index_of_weight(tensor: torch.Tensor):
@@ -293,8 +295,10 @@ def get_keep_index_of_weight(tensor: torch.Tensor):
 
 
 if __name__ == '__main__':
-    layer_dict = loadJson('../prunelog/e199.json')
-    model = Model('./yolov5s_package_detection.yaml', ch=3, nc=1, anchors=None)
+    layer_dict = load_json('../prunelog/e199.json')
+    # model = Model('./yolov5s_package_detection.yaml', ch=3, nc=1, anchors=None)
+    model = torchvision.models.detection.ssdlite.ssdlite320_mobilenet_v3_large()
+    # pretend model is Yolov5
     model.train()
     o1 = model(torch.ones(1, 3, 384, 640))
     model.load_state_dict(torch.load('../runs/train/new-asfp3/weights/precision.pt')['model'].state_dict())
@@ -304,7 +308,7 @@ if __name__ == '__main__':
     input_tensor = torch.ones(1, 3, 384, 640)
     for name,weight in o_state_dict.items():
         print(name)
-    prune_model, final_dict = GetPruneModel(model, '../prunelog/e194.json', input_tensor)
+    prune_model, final_dict, sm_assist = get_small_model(model, '../prunelog/e194.json', input_tensor)
     prune_model.train()
     print('*'*20)
     for name, module in prune_model.named_modules():
@@ -319,8 +323,8 @@ if __name__ == '__main__':
         if len(list(module.children())) == 0:
             if isinstance(module,nn.Conv2d):
                 weight = module.weight.data
-                index_zeros, index_keeps = check_channel(weight)
-                prune_module,_,_ = GetDetailedModule(prune_model, name)
+                index_zeros, index_keeps = get_keep_index_of_weight(weight)
+                prune_module,_,_ = get_special_module(prune_model, name)
                 assert isinstance(prune_module, nn.Conv2d), ''
 
                 print(name, len(index_keeps), prune_module.out_channels)
@@ -330,7 +334,7 @@ if __name__ == '__main__':
     for name, module in model.named_modules():
         if len(list(module.children())) == 0:
             if isinstance(module, nn.BatchNorm2d):
-                conv_layer = calculateInputLayers(final_dict,name)
+                conv_layer = sm_assist.get_relative_input_blobs(final_dict, name)
                 assert len(conv_layer) == 1, ''
                 conv_name = conv_layer[0][0]
                 keep_dict[name] = keep_dict[conv_name]
@@ -374,8 +378,8 @@ if __name__ == '__main__':
                         keyword = ori_key[:-len(end_key)]
                         print('*' * 20)
                         print(keyword, ori_key)
-                        input_syntax = layerSyntaxAnalysis(final_dict, keyword)
-                        layers = layerSyntaxExecuteForInputIndex(ori_model, input_syntax)
+                        input_syntax = sm_assist.get_relative_input_blobs_expression_tree(final_dict, keyword)
+                        layers = sm_assist.analysis_blobs_expression_tree_for_blob_order(ori_model, input_syntax)
                         assert (keyword != '')
                         input_layer_tensors = []
                         last_channel_count = 0
@@ -411,8 +415,8 @@ if __name__ == '__main__':
                         keyword = ori_key[:-len(end_key)]
                         print('=' * 20)
                         print(keyword, ori_key)
-                        input_syntax = layerSyntaxAnalysis(final_dict, keyword)
-                        layers = layerSyntaxExecuteForInputIndex(ori_model, input_syntax)
+                        input_syntax = sm_assist.get_relative_input_blobs_expression_tree(final_dict, keyword)
+                        layers = sm_assist.analysis_blobs_expression_tree_for_blob_order(ori_model, input_syntax)
 
                         assert (keyword != '')
                         input_layer_tensors = []
