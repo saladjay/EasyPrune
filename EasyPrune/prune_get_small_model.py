@@ -308,7 +308,7 @@ if __name__ == '__main__':
     input_tensor = torch.ones(1, 3, 384, 640)
     for name,weight in o_state_dict.items():
         print(name)
-    prune_model, final_dict, sm_assist = get_small_model(model, '../prunelog/e194.json', input_tensor)
+    prune_model, blobs_dict, sm_assist = get_small_model(model, '../prunelog/e194.json', input_tensor)
     prune_model.train()
     print('*'*20)
     for name, module in prune_model.named_modules():
@@ -319,140 +319,147 @@ if __name__ == '__main__':
     # o2 = prune_model(torch.ones(1, 3, 384, 640).cuda())
     print('='*30)
     keep_dict = {}
-    for name,module in model.named_modules():
+    for name, module in model.named_modules():
+        # module without children module
         if len(list(module.children())) == 0:
-            if isinstance(module,nn.Conv2d):
+            if isinstance(module, nn.Conv2d):
                 weight = module.weight.data
                 index_zeros, index_keeps = get_keep_index_of_weight(weight)
-                prune_module,_,_ = get_special_module(prune_model, name)
+                # check
+                prune_module, _, _ = get_special_module(prune_model, name)
                 assert isinstance(prune_module, nn.Conv2d), ''
-
                 print(name, len(index_keeps), prune_module.out_channels)
-                assert len(index_keeps), prune_module.out_channels
+                assert len(index_keeps) == prune_module.out_channels, 'something wrong happened in build small model'
                 keep_dict[name] = index_keeps
 
     for name, module in model.named_modules():
         if len(list(module.children())) == 0:
             if isinstance(module, nn.BatchNorm2d):
-                conv_layer = sm_assist.get_relative_input_blobs(final_dict, name)
+                conv_layer = sm_assist.get_relative_input_blobs(blobs_dict, name)
                 assert len(conv_layer) == 1, ''
                 conv_name = conv_layer[0][0]
                 keep_dict[name] = keep_dict[conv_name]
 
-    end_keyword = ['.weight', '.bias', '.running_mean', '.running_var']
+    weight_suffix = ['.weight', '.bias', '.running_mean', '.running_var']
     dst_model = deepcopy(prune_model)
     ori_model = deepcopy(model)
-    indice_dict1 = deepcopy(keep_dict)
-    indice_dict = {}
-    for k,v in indice_dict1.items():
-        for subfix in end_keyword:
-            indice_dict[k+subfix] = v
-        indice_dict[k] = v
-
-    new_indice_dict = deepcopy(indice_dict)
+    keep_indices_dict = {}
+    for k, v in keep_dict.items():
+        for suffix in weight_suffix:
+            keep_indices_dict[k + suffix] = v
+        keep_indices_dict[k] = v
 
     dst_state_dict = dst_model.state_dict()
     ori_state_dict = ori_model.state_dict()
-    for ori_key, ori_value in ori_state_dict.items():
-        dst_value = dst_state_dict[ori_key]
+    for key, ori_value in ori_state_dict.items():
+        dst_value = dst_state_dict[key]
+
         ori_shape = ori_value.shape
         dst_shape = dst_value.shape
 
+        # select keep weight for convolution 2d
         if len(ori_shape) == 4:
             if ori_shape == dst_shape:
-                dst_state_dict[ori_key] = ori_value
+                # 没有修剪任何部分
+                dst_state_dict[key] = ori_value
 
             # 剪枝第0维度,也就是输出维度.
             elif ori_shape[0] > dst_shape[0] and ori_shape[1] == dst_shape[1]:
-                select_index = indice_dict[ori_key]
-                if len(select_index) != dst_shape[0]:
-                    print(f'input error :{len(select_index)},{dst_shape}')
+                keep_indices = keep_indices_dict[key]
+                assert len(keep_indices) != dst_shape[0], f'input error :{len(keep_indices)},{dst_shape}'
                 pruneWeight = ori_value.detach().cpu()
-                pruneWeight = torch.index_select(pruneWeight, 0, select_index)
-                dst_state_dict[ori_key] = pruneWeight
+                pruneWeight = torch.index_select(pruneWeight, 0, keep_indices)
+                dst_state_dict[key] = pruneWeight
 
             # 剪枝第1维度，也就是输入维度
             elif ori_shape[0] == dst_shape[0] and ori_shape[1] > dst_shape[1]:
-                for end_key in end_keyword:
-                    if ori_key.endswith(end_key):
-                        keyword = ori_key[:-len(end_key)]
-                        print('*' * 20)
-                        print(keyword, ori_key)
-                        input_syntax = sm_assist.get_relative_input_blobs_expression_tree(final_dict, keyword)
-                        layers = sm_assist.analysis_blobs_expression_tree_for_blob_order(ori_model, input_syntax)
-                        assert (keyword != '')
-                        input_layer_tensors = []
-                        last_channel_count = 0
-                        for i, item in enumerate(layers):
-                            key = item
-                            input_layer_tensor = new_indice_dict[key].detach().clone()
-                            input_layer_tensor = input_layer_tensor + last_channel_count
-                            last_channel_count = ori_state_dict[key + '.weight'].shape[0]
+                for suffix in weight_suffix:
+                    if key.endswith(suffix):
+                        # get module name
+                        module_name = key[:-len(suffix)]
 
-                            input_layer_tensors.append(input_layer_tensor)
-                        select_index = input_layer_tensors[0] if len(input_layer_tensors) == 1 else torch.cat(
-                            input_layer_tensors, dim=0)
-                        #                     print(select_index)
-                        print('*' * 20)
-                        print()
-                        if len(select_index) != dst_shape[1]:
-                            print(f'output error :{len(select_index)},{dst_shape}')
+                        input_expression = sm_assist.get_relative_input_blobs_expression_tree(blobs_dict, module_name)
+                        ordered_input_module_names = sm_assist.analysis_blobs_expression_tree_for_blob_order(ori_model, input_expression)
+
+                        keep_indices_list = []
+                        stacked_channel_num = 0
+                        for i, input_module_name in enumerate(ordered_input_module_names):
+                            input_module_keep_indices = keep_indices_dict[input_module_name].detach().clone()
+                            # channel stack, for example:
+                            # the first input module has 6 channel and keep 1, 2, 4
+                            # the second input module has 6 channel and keep 2, 3, 5
+                            # the keep channel after stack is [1, 2, 4, 8(2+6), 9(3+6), 11(5+6)
+                            # the first channel add 0
+                            # the second channel add first_channel_num
+                            # the third channel add second_channel_num + first_channel_num, etc
+                            input_module_keep_indices = input_module_keep_indices + stacked_channel_num
+                            stacked_channel_num += ori_state_dict[input_module_name + '.weight'].shape[0]
+                            keep_indices_list.append(input_module_keep_indices)
+                        keep_indices = keep_indices_list[0] if len(keep_indices_list) == 1 else torch.cat(
+                            keep_indices_list, dim=0)
+
+                        assert keep_indices.shape[0] == dst_shape[1],\
+                            f'module {module_name}' \
+                            f'input channel prune error: keep length: {keep_indices.shape[0]} ' \
+                            f'does not equal pruned module input num: {dst_shape[0]}'
                         pruneWeight = ori_value.detach().cpu()
-                        pruneWeight = torch.index_select(pruneWeight, 1, select_index)
-                        dst_state_dict[ori_key] = pruneWeight
+                        pruneWeight = torch.index_select(pruneWeight, 1, keep_indices)
+                        dst_state_dict[key] = pruneWeight
 
             elif ori_shape[0] > dst_shape[0] and ori_shape[1] > dst_shape[1]:
 
-                select_index = indice_dict[ori_key]
-                if len(select_index) != dst_shape[0]:
-                    print(f'output error :{len(select_index)},{dst_shape}')
+                keep_indices = keep_indices_dict[key]
+                assert len(keep_indices) == dst_shape[0], \
+                    f'module {module_name} ' \
+                    f'output channel prune error: keep length：{keep_indices.shape[0]} ' \
+                    f'does not equal pruned module output num {dst_shape[0]}'
                 pruneWeight = ori_value.detach().cpu()
-                pruneWeight = torch.index_select(pruneWeight, 0, select_index)
+                pruneWeight = torch.index_select(pruneWeight, 0, keep_indices)
 
                 keyword = ''
-                for end_key in end_keyword:
-                    if ori_key.endswith(end_key):
-                        keyword = ori_key[:-len(end_key)]
+                for suffix in weight_suffix:
+                    if key.endswith(suffix):
+                        keyword = key[:-len(suffix)]
                         print('=' * 20)
-                        print(keyword, ori_key)
-                        input_syntax = sm_assist.get_relative_input_blobs_expression_tree(final_dict, keyword)
+                        print(keyword, key)
+                        input_syntax = sm_assist.get_relative_input_blobs_expression_tree(blobs_dict, keyword)
                         layers = sm_assist.analysis_blobs_expression_tree_for_blob_order(ori_model, input_syntax)
 
                         assert (keyword != '')
-                        input_layer_tensors = []
+                        keep_indices_list = []
                         last_channel_count = 0
                         for i, item in enumerate(layers):
                             key = item
-                            input_layer_tensor = new_indice_dict[key].detach().clone()
+                            input_layer_tensor = keep_indices_dict[key].detach().clone()
 
                             input_layer_tensor = input_layer_tensor + last_channel_count
                             last_channel_count = ori_state_dict[key + '.weight'].shape[0]
 
-                            input_layer_tensors.append(input_layer_tensor)
-                        select_index = input_layer_tensors[0] if len(input_layer_tensors) == 1 else torch.cat(
-                            input_layer_tensors, dim=0)
-                        if len(select_index) != dst_shape[1]:
-                            print(f'input error :{len(select_index)},{dst_shape}')
+                            keep_indices_list.append(input_layer_tensor)
+                        keep_indices = keep_indices_list[0] if len(keep_indices_list) == 1 else torch.cat(
+                            keep_indices_list, dim=0)
+                        if len(keep_indices) != dst_shape[1]:
+                            print(f'input error :{len(keep_indices)},{dst_shape}')
                         #                     print(select_index)
                         print('=' * 20)
                         print()
-                        pruneWeight = torch.index_select(pruneWeight, 1, select_index)
-                        dst_state_dict[ori_key] = pruneWeight
+                        pruneWeight = torch.index_select(pruneWeight, 1, keep_indices)
+                        dst_state_dict[key] = pruneWeight
 
         elif len(ori_shape) == 1:
             if ori_shape == dst_shape:
-                dst_state_dict[ori_key] = ori_value
+                dst_state_dict[key] = ori_value
             elif ori_shape[0] > dst_shape[0]:
-                select_index = indice_dict[ori_key]
-                if len(select_index) != dst_shape[0]:
-                    print(f'input error :{len(select_index)},{dst_shape}')
+                keep_indices = keep_indices_dict[key]
+                if len(keep_indices) != dst_shape[0]:
+                    print(f'input error :{len(keep_indices)},{dst_shape}')
                 pruneWeight = ori_value.detach().cpu()
                 #             print(key,pruneWeight,len(pruneWeight))
-                pruneWeight = torch.index_select(pruneWeight, 0, select_index)
-                dst_state_dict[ori_key] = pruneWeight
+                pruneWeight = torch.index_select(pruneWeight, 0, keep_indices)
+                dst_state_dict[key] = pruneWeight
     prune_model.load_state_dict(dst_state_dict)
     prune_model.cpu()
-    o = prune_model(torch.ones(1,3,384,640))
+    o = prune_model(torch.ones(1, 3, 384, 640))
     ckpt = torch.load('../runs/train/new-asfp3/weights/best.pt')
     ckpt['model'] = prune_model
     ckpt['epoch'] = 0
